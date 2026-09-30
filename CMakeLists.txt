@@ -891,7 +891,7 @@ if(STRATA_NATIVE_EXPERTS)
     # q8_0: the drafter's matrices (E-9); STRATA_ORCA_Q4KS_MMQ adds q5_0 (#296, in _strata_mmq_types), and
     # STRATA_MMQ_KQUANTS q4_k q5_k q5_1, the experts of Unsloth's UD-Q4_K_XL (docs/UNSLOTH_Q4.md; the dispatch
     # follows eddoursul/Strata 7706c1b)
-    set(_strata_mmq_cuda_types ${_strata_mmq_types})
+    set(_strata_mmq_cuda_types ${_strata_mmq_types} q4_0)   # q4_0: Q4_0-expert files (local patch)
     if(STRATA_MMQ_KQUANTS)
       list(APPEND _strata_mmq_cuda_types q4_k q5_k q5_1)
     endif()
@@ -1007,6 +1007,12 @@ if(STRATA_NATIVE_EXPERTS)
     # #291: the FP8 PLE table (tools/ple_fp8_pack.py) through PleTable vs the checkpoint's own values
     add_executable(ple_fp8_parity src/kernels/ple_fp8_parity.cpp)
     target_link_libraries(ple_fp8_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  endif()
+  if(STRATA_ENABLE_CUDA)
+    # the Q4_0 grouped-expert format vs the dense Q4_0 MMVQ and a CPU replay of llama.cpp's formula (needs a model)
+    add_executable(q4_0_expert_check tests/q4_0_expert_check.cu)
+    target_include_directories(q4_0_expert_check PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(q4_0_expert_check PRIVATE strata_kernels strata_artifact ${_strata_gpu_runtime_target})
   endif()
 endif()
 
