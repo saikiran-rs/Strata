@@ -3852,6 +3852,7 @@ def make_handler(svc: Service):
                              "meta": {"n_ctx": svc.engine.max_context},
                              "architecture": {"input_modalities": ["text", "image"] if svc.vision is not None else ["text"],
                                               "output_modalities": ["text"]}}
+                    model.update(model_card(svc))
                     if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
                         model["status"] = {"value": "unloaded"}   # like llama-server's router: listed, loads on use
                         loaded = True
@@ -4646,6 +4647,41 @@ def origins_of(value, key: str, wildcard: bool) -> list[str]:
                              + ("" if wildcard else " (no wildcards here)"))
         out.append(x)
     return out
+
+
+# Local patch (lms model-metadata contract, metadata_version 1): what an OpenAI-compatible client needs to configure
+# itself from GET /v1/models alone - the context one request can use, the output cap, input modalities, the
+# parameters this server honours, its sampling defaults and its thinking switches (frontend.EFFORT: off, low,
+# medium, xhigh; "high" is xhigh).  Every value is read from the running service, nothing is assumed.
+CARD_MAX_OUTPUT = 32768
+CARD_PARAMS = ("max_tokens", "temperature", "top_p", "top_k", "min_p", "seed", "frequency_penalty", "presence_penalty",
+               "repetition_penalty", "response_format", "structured_outputs", "tools", "tool_choice", "reasoning",
+               "include_reasoning", "reasoning_effort")
+
+
+def model_card(svc) -> dict:
+    ctx = int(svc.engine.max_context)
+    out = min(ctx, CARD_MAX_OUTPUT)
+    vision = svc.vision is not None
+    inputs = ["text", "image"] if vision else ["text"]
+    defaults = {**svc.sampling_defaults, **{k: v for k, v in svc.shared.items() if k != "reasoning_effort"}}
+    params = {k: defaults[k] for k in ("temperature", "top_p", "top_k", "min_p", "presence_penalty", "frequency_penalty",
+                                         "repetition_penalty", "seed") if k in defaults}
+    if "temperature" not in params:
+        params["temperature"] = 0.0           # no config/shared default: the engine decodes greedily
+    effort = svc.shared.get("reasoning_effort") or "xhigh"   # the template's own default when nothing is set
+    effort = {"none": "none", "high": "xhigh"}.get(effort, effort)
+    return {"context_length": ctx, "max_model_len": ctx, "max_output_tokens": out,
+            "top_provider": {"context_length": ctx, "max_completion_tokens": out},
+            "architecture": {"modality": "+".join(inputs) + "->text", "input_modalities": inputs,
+                             "output_modalities": ["text"]},
+            "supported_parameters": list(CARD_PARAMS), "default_parameters": params,
+            "capabilities": {"vision": vision, "audio": False, "video": False, "tools": True,
+                             "attachments": ["image"] if vision else [], "reasoning": True, "thinking_toggle": True,
+                             "thinking_modes": ["off", "low", "medium", "high", "xhigh"],
+                             "reasoning_efforts": ["none", "low", "medium", "high", "xhigh"],
+                             "default_reasoning_effort": effort, "preserve_thinking": True},
+            "metadata_version": 1}
 
 
 SHARED_KEYS = ("reasoning_effort", "temperature", "top_p", "top_k", "seed", "max_tokens", "experimental_speed_projection")
