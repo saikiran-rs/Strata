@@ -79,16 +79,30 @@ EFFORT = {"none": None, "off": None, "minimal": None, "disabled": None, "false":
 
 
 def effort_kwargs(value) -> dict:
-    """A reasoning effort as given by a client -> the template's kwargs.  Unknown values are a 400, not a crash."""
+    """Map client effort names to accepted levels; unsupported strengths never fail a request."""
     if value is None or value == "":
         return {}
     if value is False:
         return {"enable_thinking": False}
     key = str(value).strip().lower()
     if key not in EFFORT:
-        raise ValueError(f"unknown reasoning effort {value!r}: use none, low, medium or high")
+        try:
+            strength = float(key)
+            key = 'none' if strength <= 0 else 'low' if strength <= 1 else 'medium' if strength <= 2 else 'xhigh'
+        except ValueError:
+            key = ('xhigh' if any(v in key for v in ('high', 'max', 'ultra', 'extreme')) else
+                   'low' if any(v in key for v in ('low', 'minimum')) else 'medium')
     level = EFFORT[key]
     return {"enable_thinking": False} if level is None else {"reasoning_effort": level}
+
+
+def explicit_thinking_off(req: dict) -> bool:
+    """Common OpenRouter, DeepSeek/Anthropic and direct boolean switches, across APIs."""
+    reasoning = req.get('reasoning') if isinstance(req.get('reasoning'), dict) else {}
+    thinking = req.get('thinking') if isinstance(req.get('thinking'), dict) else {}
+    ctk = req.get('chat_template_kwargs') if isinstance(req.get('chat_template_kwargs'), dict) else {}
+    return (req.get('enable_thinking') is False or reasoning.get('enabled') is False or
+            ctk.get('enable_thinking') is False or str(thinking.get('type', '')).lower() in ('disabled', 'off'))
 
 
 def budget_effort(tokens) -> dict:
@@ -333,6 +347,8 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
             kwargs = {"enable_thinking": False}
         elif k == "reasoning_effort" and "enable_thinking" not in kwargs:
             kwargs.update(effort_kwargs(v))
+    if explicit_thinking_off(req):
+        kwargs = {"enable_thinking": False}
     return _late_system_to_user(messages), tools, kwargs
 
 
@@ -413,13 +429,16 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
     # "output_config": {"effort": "low" | "medium" | "high"}
     thinking = req.get("thinking")
     effort = (req.get("output_config") or {}).get("effort") if isinstance(req.get("output_config"), dict) else None
-    if isinstance(thinking, dict) and thinking.get("type") == "disabled":
+    reasoning = req.get('reasoning') if isinstance(req.get('reasoning'), dict) else {}
+    effort = req.get('reasoning_effort') or reasoning.get('effort') or effort
+    if explicit_thinking_off(req):
         kwargs["enable_thinking"] = False
     elif effort:
         kwargs.update(effort_kwargs(effort))
     elif isinstance(thinking, dict) and thinking.get("budget_tokens"):
         kwargs.update(budget_effort(thinking["budget_tokens"]))
-    elif thinking is None and not req.get("reasoning_budget_tokens") and not think_unasked:
+    elif thinking is None and not req.get("reasoning_budget_tokens") and not think_unasked and \
+            req.get('enable_thinking') is not True and reasoning.get('enabled') is not True:
         # Opt-in (the config's "anthropic_thinking": "on_request"; the default thinks as 0.1.31 did, since a
         # client that never asks would otherwise lose the thinking on every turn).  Anthropic's thinking is
         # opt-in there. Claude Code's helper calls (a session title, a topic check) ask for none
