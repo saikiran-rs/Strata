@@ -1241,6 +1241,18 @@ class WebApp(unittest.TestCase):
                     self.assertEqual(model["meta"]["n_ctx"], 262144)
                     self.assertEqual(model["architecture"]["input_modalities"],
                                      ["text", "image"] if vision else ["text"])
+                    # local patch: the lms model-metadata contract card (metadata_version 1)
+                    self.assertEqual(model["metadata_version"], 1)
+                    self.assertEqual((model["context_length"], model["max_model_len"]), (262144, 262144))
+                    self.assertEqual(model["max_output_tokens"], 32768)
+                    caps = model["capabilities"]
+                    self.assertEqual((caps["vision"], caps["tools"], caps["reasoning"]), (bool(vision), True, True))
+                    self.assertEqual(caps["attachments"], ["image"] if vision else [])
+                    self.assertIn("none", caps["reasoning_efforts"])
+                    self.assertEqual(caps["default_reasoning_effort"], "xhigh")   # nothing shared: the template's
+                    self.assertEqual(model["default_parameters"]["temperature"], 0.7)  # shared beats config
+                    self.assertEqual(model["default_parameters"]["repetition_penalty"], 1.1)
+                    self.assertIn("tools", model["supported_parameters"])
                 code, _, body = self.get("/props?model=" + svc.model + "&autoload=false")
                 self.assertEqual(code, 200)
                 props = json.loads(body)
