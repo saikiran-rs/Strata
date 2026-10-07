@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 
@@ -137,6 +138,32 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     const auto& lay = strata::kernels::cpu::expert_layout();
     size_t free_bytes = 0, total_bytes = 0;
     if (!check(cudaMemGetInfo(&free_bytes, &total_bytes), "free memory", err, device)) { close(); return false; }
+    // The historical allowance includes all helper work buffers. Permit an
+    // explicit smaller allowance after measured validation, while retaining
+    // space for those buffers plus 16 MiB for driver allocation granularity.
+    const size_t scratch = std::max<size_t>(
+        (size_t) strata::kernels::moe_hit_grouped_scratch_bytes(CAP, H, FF),
+        strata::kernels::native_expert_scratch_bytes(CAP, FF));
+    const size_t meta_bytes = sizeof(RemoteMeta) + (remote_opt_ ? remote_opt_->metadata_bytes() : 0);
+    const uint64_t work_bytes = (uint64_t) CAP * H * sizeof(float) * 2 +
+        (uint64_t) CAP * (H / 32) * (36 + sizeof(float)) + scratch + meta_bytes;
+    int64_t reserve_mib = 512;
+    if (const char* value = std::getenv("STRATA_REMOTE_RESERVE_MIB")) {
+        char* end = nullptr;
+        errno = 0;
+        const long parsed = std::strtol(value, &end, 10);
+        if (errno || end == value || *end || parsed < 0 || parsed > 8192) {
+            err = "STRATA_REMOTE_RESERVE_MIB must be an integer from 0 to 8192";
+            close(); return false;
+        }
+        reserve_mib = parsed;
+    }
+    const uint64_t reserve_bytes = (uint64_t) reserve_mib << 20;
+    if (reserve_bytes < work_bytes + (16ull << 20)) {
+        err = "CUDA" + std::to_string(device) + " experts: helper allowance requires at least " +
+            std::to_string((work_bytes + (16ull << 20) + ((1ull << 20) - 1)) >> 20) + " MiB for work buffers and driver headroom";
+        close(); return false;
+    }
     uint64_t needed = 0;
     std::vector<std::pair<int32_t, int32_t>> selected;
     selected.reserve((size_t) std::min<int64_t>(slots, layers * experts));
@@ -146,7 +173,7 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
         const size_t index = (size_t) pair.first * (size_t) experts + (size_t) pair.second;
         if (primary.slot_of(pair.first, pair.second) < 0 && !claimed[index] && !picked[index]) {
             const uint64_t bytes = lay.native ? (lay.blob_bytes(pair.first) + 255) / 256 * 256 : lay.max_blob;
-            if (auto_size && needed + bytes + (512ull << 20) > free_bytes) break;
+            if (auto_size && needed + bytes + reserve_bytes > free_bytes) break;
             selected.push_back(pair);
             needed += bytes;
             picked[index] = 1;
@@ -154,7 +181,7 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
         }
     }
     if (selected.empty()) {
-        err = "CUDA" + std::to_string(device) + (auto_size ? " experts: no unclaimed expert fits with 512 MiB free"
+        err = "CUDA" + std::to_string(device) + (auto_size ? " experts: no unclaimed expert fits with the helper allowance"
                                                           : " experts: no unclaimed experts remain");
         close(); return false;
     }
@@ -164,8 +191,8 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
         for (const auto& pair : selected) sizes.push_back((int64_t) lay.blob_bytes(pair.first));
     }
     // Leave room for the CUDA context, staging and later driver allocations, especially under WDDM.
-    if (needed + (512ull << 20) > free_bytes) {
-        err = "CUDA" + std::to_string(device) + " experts: slots leave less than 512 MiB free; reduce --expert-cache-device" + std::to_string(device);
+    if (needed + reserve_bytes > free_bytes) {
+        err = "CUDA" + std::to_string(device) + " experts: slots leave less than the helper allowance; reduce --expert-cache-device" + std::to_string(device);
         close(); return false;
     }
     const bool cache_ok = lay.native ? cache_.open_sized(sizes, layers, experts, err)
@@ -188,10 +215,6 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
         close(); return false;
     }
 
-    const size_t scratch = std::max<size_t>(
-        (size_t) strata::kernels::moe_hit_grouped_scratch_bytes(CAP, H, FF),
-        strata::kernels::native_expert_scratch_bytes(CAP, FF));
-    const size_t meta_bytes = sizeof(RemoteMeta) + (remote_opt_ ? remote_opt_->metadata_bytes() : 0);
     const bool allocated =
         check(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking), "stream", err, device) &&
         check(cudaHostAlloc((void**) &h_x_, (size_t) CAP * H * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "input staging", err, device) &&
