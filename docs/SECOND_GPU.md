@@ -166,3 +166,7 @@ not yet combined with the peer's rows. Mapped host buffers gain
 context write them. The tier size is manual for now (`--peer-reserve-mib`,
 `--peer-slots`); automatic sizing on small cards wants the buffer lending of
 #216 and is a follow-up.
+
+## Local measured helper allowance
+
+`STRATA_REMOTE_RESERVE_MIB` overrides the historical 512 MiB allowance used by helper cache admission. It includes helper work buffers and must cover their computed size plus 16 MiB of driver headroom. The default stays 512; invalid or undersized values fail startup. A smaller value is an explicit local resource tuning that requires full-context validation; it does not change model tensors, quantization, context, routing math or sampler.
