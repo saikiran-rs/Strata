@@ -171,6 +171,10 @@ int main(int argc, char** argv) {
     const bool bench = argc > 1 && std::string(argv[1]) == "--bench";
     cudaStream_t s;
     cudaStreamCreate(&s);
+    if (!native_mmvq_il_supported(12, 2, 10240)) {
+        std::printf("mmvq_il_parity: FAIL (interleaved kernel is not active; fallback cannot prove parity)\n");
+        return 1;
+    }
     int bad = 0;
     for (const Case& c : CASES) bad += run_case(c, bench, s);
     std::printf("%s\n", bad ? "mmvq_il_parity: FAIL" : "mmvq_il_parity: OK (every case, T 2-4, rows 1/2/4 and the table, bitwise)");

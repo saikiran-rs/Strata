@@ -1302,7 +1302,7 @@ void launch_multi(const void* weights, const void* x_q8_1, float* y, int n_in, i
     }
 }
 
-// The same wave32 layout is tested bitwise on gfx1030/gfx1100; HIP remains opt-in.
+// The wave32 layout also compiles for HIP; HIP execution remains opt-in and needs parity validation.
 // ============================ ncols = 2..4 from interleaved activations (fork F4, Eddoursul) ============================
 //
 // `native_quantize_q8_1_il` also writes the columns interleaved (native_mmvq.hpp), so one load reads the same int of
