@@ -1311,6 +1311,25 @@ void launch_multi(const void* weights, const void* x_q8_1, float* y, int n_in, i
 // xor tree; each weight block is decoded once (the traits' `load`) and every column takes the single-column dot's own
 // expression (the same *_q8_dot_impl calls), so each value is bitwise the multi-column kernel's. K-quants read the
 // block-major copy; IQ4_XS, whose lanes read the same int of consecutive blocks, the position-major one.
+struct IlQ80 {
+    using F = SmallTraits<Q80Block, 8>;
+    static constexpr bool PM = false;
+    template <int NC, class X>
+    __device__ static void apply(const F::W& r, const X& x, int kby, int iqs, float (&out)[NC]) {
+        int u[2][NC];
+        float d[NC];
+        x.u(kby, iqs, u[0]);
+        x.u(kby, iqs + 1, u[1]);
+        x.scales(kby, d);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            int sumi = STRATA_DP4A(r.v[0], u[0][c], 0);
+            sumi = STRATA_DP4A(r.v[1], u[1][c], sumi);
+            out[c] = r.d0 * d[c] * float(sumi);
+        }
+    }
+};
+
 struct IlIQ4XS {
     using F = IQ4XSTraits;
     static constexpr bool PM = true;
@@ -2495,6 +2514,7 @@ namespace {
 // neighbour's value. Every choice is bitwise the same output, so the table is only speed.
 struct IlRows { int type; uint8_t r[3][5]; };
 constexpr IlRows kIlRows[] = {
+    {8, {{1, 1, 1, 1, 1}, {1, 1, 1, 1, 1}, {1, 1, 1, 1, 1}}},   // Q8_0: initial row1 choice; measure before promotion
     {23, {{0, 0, 0, 0, 0}, {0, 0, 2, 4, 4}, {0, 1, 1, 1, 1}}},   // IQ4_XS
     {12, {{0, 0, 1, 1, 1}, {0, 1, 1, 1, 1}, {0, 1, 1, 1, 1}}},   // Q4_K
     {13, {{0, 0, 1, 1, 1}, {0, 4, 1, 1, 1}, {0, 1, 1, 1, 2}}},   // Q5_K
@@ -2545,7 +2565,7 @@ bool il_arch_ok() {
 bool native_mmvq_il_supported(int ggml_type, int ncols, int n_out) {
     if (ncols < 2 || ncols > 4 || !g_multi_exact || !il_arch_ok()) return false;
     return (g_tune_rows ? g_tune_rows : il_rows(ggml_type, ncols, n_out)) != 0 &&
-           (ggml_type == 23 || ggml_type == 12 || ggml_type == 13 || ggml_type == 14);
+           (ggml_type == 8 || ggml_type == 23 || ggml_type == 12 || ggml_type == 13 || ggml_type == 14);
 }
 
 void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, const void* x_il, float* y, int n_in,
@@ -2562,6 +2582,7 @@ void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, cons
     validate_stream(stream);
     const auto s = static_cast<cudaStream_t>(stream);
     switch (ggml_type) {
+    case 8: launch_il_rows<IlQ80>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
     case 23: launch_il_rows<IlIQ4XS>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
     case 12: launch_il_rows<IlQ4K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
     case 13: launch_il_rows<IlQ5K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;

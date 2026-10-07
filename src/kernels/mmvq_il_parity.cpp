@@ -30,6 +30,13 @@ struct Case {
 };
 // the engine's dense shapes: qkv 10240 / gate 6144 / out 2560 (GDN), q 12288 / k,v 512 / o 2560 (QSA), the head
 const Case CASES[] = {
+    {"Q8_0 2560x10240", 8, 2560, 10240, 32, 34, {0, -1}},
+    {"Q8_0 2560x6144", 8, 2560, 6144, 32, 34, {0, -1}},
+    {"Q8_0 4096x2560", 8, 4096, 2560, 32, 34, {0, -1}},
+    {"Q8_0 2560x512", 8, 2560, 512, 32, 34, {0, -1}},
+    {"Q8_0 2560x12288", 8, 2560, 12288, 32, 34, {0, -1}},
+    {"Q8_0 odd rows 2560x2051", 8, 2560, 2051, 32, 34, {0, -1}},
+    {"Q8_0 head 2560x248320", 8, 2560, 248320, 32, 34, {0, -1}},
     {"IQ4_XS 2560x10240", 23, 2560, 10240, 256, 136, {0, -1}},
     {"IQ4_XS 2560x6144", 23, 2560, 6144, 256, 136, {0, -1}},
     {"IQ4_XS 4096x2560", 23, 4096, 2560, 256, 136, {0, -1}},
@@ -171,7 +178,7 @@ int main(int argc, char** argv) {
     const bool bench = argc > 1 && std::string(argv[1]) == "--bench";
     cudaStream_t s;
     cudaStreamCreate(&s);
-    if (!native_mmvq_il_supported(12, 2, 10240)) {
+    if (!native_mmvq_il_supported(8, 2, 10240) || !native_mmvq_il_supported(12, 2, 10240)) {
         std::printf("mmvq_il_parity: FAIL (interleaved kernel is not active; fallback cannot prove parity)\n");
         return 1;
     }
