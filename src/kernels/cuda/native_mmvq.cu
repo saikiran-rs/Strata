@@ -1302,7 +1302,7 @@ void launch_multi(const void* weights, const void* x_q8_1, float* y, int n_in, i
     }
 }
 
-// The wave32 layout also compiles for HIP; HIP execution remains opt-in and needs parity validation.
+// Make the wave32 layout available to HIP; execution remains opt-in and needs parity validation.
 // ============================ ncols = 2..4 from interleaved activations (fork F4, Eddoursul) ============================
 //
 // `native_quantize_q8_1_il` also writes the columns interleaved (native_mmvq.hpp), so one load reads the same int of
@@ -2501,6 +2501,14 @@ constexpr IlRows kIlRows[] = {
     {14, {{0, 0, 1, 1, 0}, {0, 0, 1, 1, 2}, {0, 0, 1, 1, 1}}},   // Q6_K
 };
 int il_rows(int type, int ncols, int n_out) {
+#if defined(__HIPCC__)
+    static const int override_rows = [] {
+        const char* value = std::getenv("STRATA_HIP_MMVQ_IL_ROWS");
+        const int rows = value ? std::atoi(value) : 0;
+        return rows == 1 || rows == 2 || rows == 4 ? rows : 0;
+    }();
+    if (override_rows) return override_rows;
+#endif
     const int cls = n_out < 2048 ? 0 : n_out < 4096 ? 1 : n_out < 8192 ? 2 : n_out < 12288 ? 3 : 4;
     for (const IlRows& e : kIlRows)
         if (e.type == type) return e.r[ncols - 2][cls];
