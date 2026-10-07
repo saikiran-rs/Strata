@@ -28,9 +28,7 @@
 #include "strata/kernels/q8_1_finite.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "s26_tsum.cuh"
-#if !defined(__HIPCC__)
 #include "q8_1_il.cuh"
-#endif
 #include "strata/kernels/pdl.hpp"
 
 #include <cuda_fp16.h>
@@ -1304,7 +1302,7 @@ void launch_multi(const void* weights, const void* x_q8_1, float* y, int n_in, i
     }
 }
 
-#if !defined(__HIPCC__)   // CUDA only: the HIP paths keep native_mmvq's kernels
+// The same wave32 layout is tested bitwise on gfx1030/gfx1100; HIP remains opt-in.
 // ============================ ncols = 2..4 from interleaved activations (fork F4, Eddoursul) ============================
 //
 // `native_quantize_q8_1_il` also writes the columns interleaved (native_mmvq.hpp), so one load reads the same int of
@@ -1499,7 +1497,6 @@ __global__ void native_q8_1_interleave_kernel(const Q81Block* __restrict__ y, in
     if (p == 0) dl[std::size_t(b) * cp + c] = __low2float(blk.ds);
 }
 
-#endif  // !__HIPCC__
 
 void validate_shape(int n_in, int ncols, int block_elems = Q8K) {
     if (n_in <= 0 || n_in % block_elems != 0) {
@@ -2469,7 +2466,6 @@ void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* 
     }
 }
 
-#if !defined(__HIPCC__)
 std::size_t native_q8_1_il_bytes(int n_in, int ncols) {
     validate_shape(n_in, ncols);
     return std::size_t(n_in / Q8K) * std::size_t(native_q8_1_il_cp(ncols)) * (16 * sizeof(int) + sizeof(float));
@@ -2521,8 +2517,18 @@ bool il_arch_ok() {
     int dev = 0;
     if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 16) return false;
     if (ok[dev] == 0) {
+#if defined(__HIPCC__)
+        const char* enabled = std::getenv("STRATA_HIP_MMVQ_IL");
+        cudaDeviceProp prop{};
+        const bool requested = enabled && std::atoi(enabled) != 0;
+        const bool found = cudaGetDeviceProperties(&prop, dev) == cudaSuccess;
+        const std::string arch = found ? prop.gcnArchName : "";
+        ok[dev] = requested && found && prop.warpSize == 32 &&
+                  (arch.starts_with("gfx103") || arch.starts_with("gfx110")) ? 1 : -1;
+#else
         int major = 0;
         ok[dev] = (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess && major >= 8) ? 1 : -1;
+#endif
     }
     return ok[dev] > 0;
 }
@@ -2556,17 +2562,5 @@ void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, cons
     launch_check();
 }
 
-#else  // HIP: no interleaved path
-std::size_t native_q8_1_il_bytes(int n_in, int ncols) { return native_q8_1_bytes(n_in, ncols) * 2; }
-void native_q8_1_interleave(const void*, void*, int, int, void*) {
-    throw std::invalid_argument("native_q8_1_interleave is CUDA only");
-}
-bool native_mmvq_il_supported(int, int, int) { return false; }
-void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, const void*, float* y, int n_in, int n_out,
-                    int ncols, void* stream) {
-    native_mmvq(ggml_type, weights, x_q8_1, y, n_in, n_out, ncols, stream);
-}
-void native_mmvq_il_tune(int) {}
-#endif  // !__HIPCC__
 
 } // namespace strata::kernels
